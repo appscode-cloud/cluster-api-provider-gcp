@@ -507,6 +507,12 @@ func (gce *GCEClient) Exists(_ context.Context, cluster *clusterv1.Cluster, mach
 	if err != nil {
 		return false, err
 	}
+	if value, _ := machine.ObjectMeta.Annotations[InstanceStatusAnnotationKey]; value == "" {
+		if gce.client != nil {
+			return (i != nil), gce.updateAnnotations(cluster, machine)
+		}
+	}
+
 	return (i != nil), err
 }
 

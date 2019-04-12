@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kubeadmv1beta1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta1"
 )
 
 // +genclient
@@ -30,6 +31,38 @@ type GCEClusterProviderSpec struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	Project string `json:"project"`
+
+	// CAKeyPair is the key pair for CA certs.
+	CAKeyPair KeyPair `json:"caKeyPair,omitempty"`
+
+	// EtcdCAKeyPair is the key pair for etcd.
+	EtcdCAKeyPair KeyPair `json:"etcdCAKeyPair,omitempty"`
+
+	// FrontProxyCAKeyPair is the key pair for the front proxy.
+	FrontProxyCAKeyPair KeyPair `json:"frontProxyCAKeyPair,omitempty"`
+
+	// SAKeyPair is the service account key pair.
+	SAKeyPair KeyPair `json:"saKeyPair,omitempty"`
+
+	// AdminKubeconfig generated using the certificates part of the spec
+	// do not move to status, since it uses on disk ca certs, which causes issues during regeneration
+	AdminKubeconfig string `json:"adminKubeconfig,omitempty"`
+
+	// DiscoveryHashes generated using the certificates part of the spec, used by master and nodes bootstrapping
+	// this never changes until ca is rotated
+	// do not move to status, since it uses on disk ca certs, which causes issues during regeneration
+	DiscoveryHashes []string `json:"discoveryHashes,omitempty"`
+
+	// ClusterConfiguration holds the cluster-wide information used during a
+	// kubeadm init call.
+	ClusterConfiguration kubeadmv1beta1.ClusterConfiguration `json:"clusterConfiguration,omitempty"`
+}
+
+// KeyPair is how operators can supply custom keypairs for kubeadm to use.
+type KeyPair struct {
+	// base64 encoded cert and key
+	Cert []byte `json:"cert"`
+	Key  []byte `json:"key"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

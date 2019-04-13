@@ -7,6 +7,7 @@ rules:
   - gceproviderconfig.k8s.io
   resources:
   - gceclusterproviderconfigs
+  - gceclusterproviderstatuses
   - gcemachineproviderconfigs
   verbs:
   - get
@@ -20,6 +21,7 @@ rules:
   - cluster.k8s.io
   resources:
   - clusters
+  - clusters/status
   - machines
   - machines/status
   - machinedeployments

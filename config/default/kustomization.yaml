@@ -19,6 +19,7 @@ namePrefix: gcp-provider-
 # markers ("---").
 resources:
 - ../crds/gceproviderconfig_v1alpha1_gceclusterproviderspec.yaml
+- ../crds/gceproviderconfig_v1alpha1_gceclusterproviderstatus.yaml
 - ../crds/gceproviderconfig_v1alpha1_gcemachineproviderspec.yaml
 - ../rbac/rbac_role.yaml
 - ../rbac/rbac_role_binding.yaml

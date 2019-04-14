@@ -18,7 +18,6 @@ package google
 
 import (
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -28,12 +27,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
+
+	"github.com/pkg/errors"
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-	compute "google.golang.org/api/compute/v1"
+	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/googleapi"
-	gcfg "gopkg.in/gcfg.v1"
+	"gopkg.in/gcfg.v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -301,11 +303,12 @@ func (gce *GCEClient) Create(_ context.Context, cluster *clusterv1.Cluster, mach
 
 		op, err := gce.computeService.InstancesInsert(project, zone, &compute.Instance{
 			Name:         name,
-			MachineType:  fmt.Sprintf("zones/%s/machineTypes/%s", zone, machineConfig.MachineType),
+			Zone:         zone,
+			MachineType:  fmt.Sprintf("projects/%v/zones/%s/machineTypes/%s", project, zone, machineConfig.MachineType),
 			CanIpForward: true,
 			NetworkInterfaces: []*compute.NetworkInterface{
 				{
-					Network: "global/networks/default",
+					Network: fmt.Sprintf("projects/%v/global/networks/default", project),
 					AccessConfigs: []*compute.AccessConfig{
 						{
 							Type: "ONE_TO_ONE_NAT",
@@ -895,28 +898,40 @@ func (gce *GCEClient) getMetadata(cluster *clusterv1.Cluster, machine *clusterv1
 	if err != nil {
 		return nil, err
 	}
+
+	kubeadmToken, err := gce.getKubeadmToken()
+	if err != nil {
+		return nil, errors.Wrap(err, "Error getting kubeadm config")
+	}
+
 	machine.Spec.Versions.ControlPlane = stripVersion(machine.Spec.Versions.ControlPlane)
 	if isMaster(configParams.Roles) {
 		if machine.Spec.Versions.ControlPlane == "" {
 			return nil, gce.handleMachineError(machine, apierrors.InvalidMachineConfiguration(
 				"invalid master configuration: missing Machine.Spec.Versions.ControlPlane"), createEventAction)
 		}
+
 		var err error
-		metadataMap, err = masterMetadata(cluster, machine, clusterConfig.Project, &machineSetupMetadata)
+		metadataMap, err = masterMetadata(kubeadmToken, cluster, machine, clusterConfig.Project, &machineSetupMetadata)
 		if err != nil {
 			return nil, err
 		}
-		ca := gce.certificateAuthority
-		if ca != nil {
-			metadataMap["ca-cert"] = base64.StdEncoding.EncodeToString(ca.Certificate)
-			metadataMap["ca-key"] = base64.StdEncoding.EncodeToString(ca.PrivateKey)
-		}
+
+		metadataMap["ca-cert"] = base64.StdEncoding.EncodeToString(clusterConfig.CAKeyPair.Cert)
+		metadataMap["ca-key"] = base64.StdEncoding.EncodeToString(clusterConfig.CAKeyPair.Key)
+
+		metadataMap["fpca-cert"] = base64.StdEncoding.EncodeToString(clusterConfig.FrontProxyCAKeyPair.Cert)
+		metadataMap["fpca-key"] = base64.StdEncoding.EncodeToString(clusterConfig.FrontProxyCAKeyPair.Key)
+
+		metadataMap["sa-cert"] = base64.StdEncoding.EncodeToString(clusterConfig.SAKeyPair.Cert)
+		metadataMap["sa-key"] = base64.StdEncoding.EncodeToString(clusterConfig.SAKeyPair.Key)
+
+		metadataMap["etcdca-cert"] = base64.StdEncoding.EncodeToString(clusterConfig.EtcdCAKeyPair.Cert)
+		metadataMap["etcdca-key"] = base64.StdEncoding.EncodeToString(clusterConfig.EtcdCAKeyPair.Key)
+
 	} else {
 		var err error
-		kubeadmToken, err := gce.getKubeadmToken()
-		if err != nil {
-			return nil, err
-		}
+
 		metadataMap, err = nodeMetadata(kubeadmToken, cluster, machine, clusterConfig.Project, &machineSetupMetadata)
 		if err != nil {
 			return nil, err

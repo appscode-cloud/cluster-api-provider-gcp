@@ -27,8 +27,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
+	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/pkg/errors"
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
@@ -350,6 +351,11 @@ func (gce *GCEClient) Create(_ context.Context, cluster *clusterv1.Cluster, mach
 		if gce.client != nil {
 			return gce.updateAnnotations(cluster, machine)
 		}
+
+		err = gce.reconcileTargetPool(cluster, machine, false)
+		if err != nil {
+			return errors.Wrap(err, "failed to reconcile target pool for lb")
+		}
 	} else {
 		klog.Infof("Skipped creating a VM that already exists.\n")
 	}
@@ -357,7 +363,102 @@ func (gce *GCEClient) Create(_ context.Context, cluster *clusterv1.Cluster, mach
 	return nil
 }
 
+func (gce *GCEClient) reconcileTargetPool(cluster *clusterv1.Cluster, machine *clusterv1.Machine, isDelete bool) error {
+	if !util.IsControlPlaneMachine(machine) {
+		return nil
+	}
+
+	klog.Infof("reconciling load balancer target pool")
+
+	machineConfig, err := machineProviderFromProviderSpec(machine.Spec.ProviderSpec)
+	if err != nil {
+		return gce.handleMachineError(machine, apierrors.InvalidMachineConfiguration(
+			"Cannot unmarshal machine's providerSpec field: %v", err), createEventAction)
+	}
+	clusterConfig, err := clusterProviderFromProviderSpec(cluster.Spec.ProviderSpec)
+	if err != nil {
+		return gce.handleMachineError(machine, apierrors.InvalidMachineConfiguration(
+			"Cannot unmarshal cluster's providerSpec field: %v", err), createEventAction)
+	}
+
+	project := clusterConfig.Project
+	zone := machineConfig.Zone
+	region := zone[0 : len(zone)-2]
+	name := fmt.Sprintf("%s-apiserver", cluster.Name)
+	instanceURL := fmt.Sprintf("projects/%s/zones/%s/instances/%s", project, zone, machine.Name)
+
+	targetPool, err := gce.computeService.TargetPoolGet(project, region, name)
+	if err != nil {
+		spew.Dump(err)
+		return errors.Wrap(err, "failed to get target pool for lb")
+	}
+
+	// check if machine is already in target pool
+	var found bool
+	for _, instance := range targetPool.Instances {
+		if strings.Contains(instance, machine.Name) {
+			found = true
+		}
+	}
+
+	if !isDelete {
+		if found {
+			klog.Infof("machine already exists in target pool, skipping")
+			return nil
+		}
+		klog.Infof("machine not found in target pool, inserting")
+
+		err := wait.PollImmediate(time.Second*5, time.Minute*15, func() (done bool, err error) {
+			klog.Infof("waiting for node %s to become ready", machine.Name)
+
+			nodeList := corev1.NodeList{}
+			if err := gce.client.List(context.Background(), nil, &nodeList); err != nil {
+				klog.Infof("failed to list nodes: %v", err)
+				return false, nil
+			}
+
+			for _, node := range nodeList.Items {
+				if node.Name == machine.Name {
+					klog.Infof("found node %s", node.Name)
+					return true, nil
+				}
+			}
+			klog.Infof("node not found for machine %s", machine.Name)
+			return false, nil
+
+		})
+		if err != nil {
+			klog.Infof("timed out waiting for node %s to be ready", machine.Name)
+			return errors.Wrapf(err, "timed out waiting for node %s to be ready", machine.Name)
+		}
+
+		_, err = gce.computeService.TargetPoolInsertInstance(project, region, name, instanceURL)
+		if err != nil {
+			return errors.Wrapf(err, "failed to insert machine %s in lb target pool", machine.Name)
+		}
+		klog.Infof("successfully reconciled load balancer target pool")
+		return nil
+	}
+
+	if !found {
+		klog.Infof("machine %s doesn't exists in lb target pool, skipping", machine.Name)
+	}
+	klog.Infof("removing machine %s from lb target pool", machine.Name)
+	if _, err := gce.computeService.TargetPoolRemoveInstance(project, region, name, instanceURL); err != nil {
+		spew.Dump(err)
+		return errors.Wrapf(err, "failed to remove instance %s in lb targetpool", machine.Name)
+	}
+
+	klog.Infof("successfully reconciled load balancer target pool")
+	return nil
+}
+
 func (gce *GCEClient) Delete(_ context.Context, cluster *clusterv1.Cluster, machine *clusterv1.Machine) error {
+	err := gce.reconcileTargetPool(cluster, machine, true)
+	if err != nil {
+		return errors.Wrap(err, "failed to reconcile target pool for lb")
+	}
+
 	instance, err := gce.instanceIfExists(cluster, machine)
 	if err != nil {
 		return err
@@ -486,6 +587,11 @@ func (gce *GCEClient) Update(ctx context.Context, cluster *clusterv1.Cluster, go
 	if err != nil {
 		return gce.handleMachineError(currentMachine, apierrors.InvalidMachineConfiguration(
 			"Cannot unmarshal machine's providerSpec field: %v", err), noEventAction)
+	}
+
+	err = gce.reconcileTargetPool(cluster, goalMachine, false)
+	if err != nil {
+		return errors.Wrap(err, "failed to reconcile target pool for lb")
 	}
 
 	if !gce.requiresUpdate(currentMachine, goalMachine) {

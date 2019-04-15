@@ -26,7 +26,7 @@ import (
 	"time"
 
 	"golang.org/x/net/context"
-	compute "google.golang.org/api/compute/v1"
+	"google.golang.org/api/compute/v1"
 	"k8s.io/klog"
 )
 
@@ -112,6 +112,33 @@ func (c *ComputeService) FirewallsInsert(project string, firewallRule *compute.F
 // A pass through wrapper for compute.Service.Firewalls.Delete(...)
 func (c *ComputeService) FirewallsDelete(project string, name string) (*compute.Operation, error) {
 	return c.service.Firewalls.Delete(project, name).Do()
+}
+
+// A pass through wrapper for compute.Service.TargetPools.Get(...)
+func (c *ComputeService) TargetPoolGet(project, region, targetPoolName string) (*compute.TargetPool, error) {
+	return c.service.TargetPools.Get(project, region, targetPoolName).Do()
+}
+
+// A pass through wrapper for compute.Service.TargetPools.AddInstance(...)
+func (c *ComputeService) TargetPoolInsertInstance(project, region, targetPoolName, vmURL string) (*compute.Operation, error) {
+	return c.service.TargetPools.AddInstance(project, region, targetPoolName, &compute.TargetPoolsAddInstanceRequest{
+		Instances: []*compute.InstanceReference{
+			{
+				Instance: vmURL,
+			},
+		},
+	}).Do()
+}
+
+// A pass through wrapper for compute.Service.TargetPools.RemoveInstance(...)
+func (c *ComputeService) TargetPoolRemoveInstance(project, region, targetPoolName, vmURL string) (*compute.Operation, error) {
+	return c.service.TargetPools.RemoveInstance(project, region, targetPoolName, &compute.TargetPoolsRemoveInstanceRequest{
+		Instances: []*compute.InstanceReference{
+			{
+				Instance: vmURL,
+			},
+		},
+	}).Do()
 }
 
 func (c *ComputeService) WaitForOperation(project string, op *compute.Operation) error {

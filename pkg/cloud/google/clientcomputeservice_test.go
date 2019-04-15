@@ -32,6 +32,19 @@ type GCEClientComputeServiceMock struct {
 	mockWaitForOperation    func(project string, op *compute.Operation) error
 }
 
+func (c *GCEClientComputeServiceMock) TargetPoolGet(project, region, name string) (*compute.TargetPool, error) {
+	return nil, nil
+
+}
+
+func (c *GCEClientComputeServiceMock) TargetPoolInsertInstance(project, region, name, vmName string) (*compute.Operation, error) {
+	return nil, nil
+}
+
+func (c *GCEClientComputeServiceMock) TargetPoolRemoveInstance(project, region, name, vmName string) (*compute.Operation, error) {
+	return nil, nil
+}
+
 func (c *GCEClientComputeServiceMock) ImagesGet(project string, image string) (*compute.Image, error) {
 	if c.mockImagesGet == nil {
 		return nil, nil

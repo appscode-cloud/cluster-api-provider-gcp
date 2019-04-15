@@ -32,4 +32,7 @@ type GCEClientComputeService interface {
 	FirewallsInsert(project string, firewallRule *compute.Firewall) (*compute.Operation, error)
 	FirewallsDelete(project string, name string) (*compute.Operation, error)
 	WaitForOperation(project string, op *compute.Operation) error
+	TargetPoolGet(project, regoin, name string) (*compute.TargetPool, error)
+	TargetPoolInsertInstance(project, regoin, name, vmURL string) (*compute.Operation, error)
+	TargetPoolRemoveInstance(project, region, name, vmURL string) (*compute.Operation, error)
 }

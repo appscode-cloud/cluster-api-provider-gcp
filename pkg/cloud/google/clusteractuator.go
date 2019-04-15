@@ -17,12 +17,15 @@ limitations under the License.
 package google
 
 import (
+	"encoding/json"
 	"fmt"
-
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/compute/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog"
+	"sigs.k8s.io/cluster-api-provider-gcp/pkg/apis/gceproviderconfig/v1alpha1"
 	"sigs.k8s.io/cluster-api-provider-gcp/pkg/cloud/google/clients"
 	"sigs.k8s.io/cluster-api-provider-gcp/pkg/cloud/google/clients/errors"
 	clusterv1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
@@ -87,7 +90,23 @@ func (gce *GCEClusterClient) Reconcile(cluster *clusterv1.Cluster) error {
 	if err != nil {
 		klog.Warningf("Error creating firewall rule for core api server traffic: %v", err)
 	}
-	return nil
+
+	conf := &v1alpha1.GCEClusterProviderStatus{
+		TypeMeta: v1.TypeMeta{
+			APIVersion: "gceproviderconfig/v1alpha1",
+			Kind:       "GCEClusterProviderStatus",
+		},
+	}
+
+	bytes, err := json.Marshal(conf)
+	if err != nil {
+		return err
+
+	}
+	cluster.Status.ProviderStatus = &runtime.RawExtension{
+		Raw: bytes,
+	}
+	return gce.client.Status().Update(context.Background(), cluster)
 }
 
 func (gce *GCEClusterClient) Delete(cluster *clusterv1.Cluster) error {

@@ -1,11 +1,11 @@
 items:
 - machineParams:
-  - os: ubuntu-1604-lts
+  - os: ubuntu-1604-xenial-v20170721
     roles:
     - Master
     versions:
-      kubelet: 1.12.0
-      controlPlane: 1.12.0
+      kubelet: 1.14.0
+      controlPlane: 1.14.0
   image: projects/ubuntu-os-cloud/global/images/family/ubuntu-1604-lts
   metadata:
     startupScript: |
@@ -15,17 +15,17 @@ items:
       ARCH=amd64
 
       function curl_metadata() {
-          curl  --retry 5 --silent --fail --header "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/$@"
+        curl  --retry 5 --silent --fail --header "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/$@"
       }
 
       function copy_file () {
-          if ! curl_metadata attributes/$1; then
-              return
-          fi
-          echo "Copying metadata $1 -> $2..."
-          mkdir -p $(dirname $2)
-          curl_metadata attributes/$1 > $2
-          chmod $3 $2
+        if ! curl_metadata attributes/$1; then
+          return
+        fi
+        echo "Copying metadata $1 -> $2..."
+        mkdir -p $(dirname $2)
+        curl_metadata attributes/$1 > $2
+        chmod $3 $2
       }
 
       curl -sf https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
@@ -33,23 +33,39 @@ items:
       sh -c 'echo "deb http://apt.kubernetes.io/ kubernetes-xenial main" > /etc/apt/sources.list.d/kubernetes.list'
       apt-get update -y
       apt-get install -y \
-        socat \
-        ebtables \
-        apt-transport-https \
-        cloud-utils \
-        prips
+      socat \
+      ebtables \
+      apt-transport-https \
+      cloud-utils \
+      prips
 
       function install_configure_docker () {
-        # prevent docker from auto-starting
-        echo "exit 101" > /usr/sbin/policy-rc.d
-        chmod +x /usr/sbin/policy-rc.d
-        trap "rm /usr/sbin/policy-rc.d" RETURN
-        apt-get install -y docker.io
-        echo 'DOCKER_OPTS="--iptables=false --ip-masq=false"' > /etc/default/docker
-        systemctl daemon-reload
-        systemctl enable docker
-        systemctl start docker
+        apt-get update && apt-get install apt-transport-https ca-certificates curl software-properties-common
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+
+        add-apt-repository \
+        "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+              $(lsb_release -cs) \
+              stable"
+
+        apt-get update && apt-get install -y docker-ce=18.06.2~ce~3-0~ubuntu
+        cat > /etc/docker/daemon.json <<EOF
+      {
+        "exec-opts": ["native.cgroupdriver=systemd"],
+        "log-driver": "json-file",
+        "log-opts": {
+          "max-size": "100m"
+        },
+        "storage-driver": "overlay2"
       }
+      EOF
+
+        mkdir -p /etc/systemd/system/docker.service.d
+
+        systemctl daemon-reload
+        systemctl restart docker
+      }
+
       install_configure_docker
 
       curl -fsSL https://dl.k8s.io/release/${VERSION}/bin/linux/${ARCH}/kubeadm > /usr/bin/kubeadm.dl
@@ -59,37 +75,29 @@ items:
       # Our Debian packages have versions like "1.8.0-00" or "1.8.0-01". Do a prefix
       # search based on our SemVer to find the right (newest) package version.
       function getversion() {
-          name=$1
-          prefix=$2
-          version=$(apt-cache madison $name | awk '{ print $3 }' | grep ^$prefix | head -n1)
-          if [[ -z "$version" ]]; then
-              echo Can\'t find package $name with prefix $prefix
-              exit 1
-          fi
-          echo $version
+        name=$1
+        prefix=$2
+        version=$(apt-cache madison $name | awk '{ print $3 }' | grep ^$prefix | head -n1)
+        if [[ -z "$version" ]]; then
+        echo Can\'t find package $name with prefix $prefix
+        exit 1
+        fi
+        echo $version
       }
+
       KUBELET=$(getversion kubelet ${KUBELET_VERSION}-)
       KUBEADM=$(getversion kubeadm ${KUBELET_VERSION}-)
       apt-get install -y \
-          kubelet=${KUBELET} \
-          kubeadm=${KUBEADM}
+      kubelet=${KUBELET} \
+      kubeadm=${KUBEADM}
       mv /usr/bin/kubeadm.dl /usr/bin/kubeadm
       chmod a+rx /usr/bin/kubeadm
 
-      # Override network args to use kubenet instead of cni, override Kubelet DNS args and
-      # add cloud provider args.
-      cat > /etc/default/kubelet <<EOF
-      KUBELET_EXTRA_ARGS="--network-plugin=kubenet --cluster-dns=${CLUSTER_DNS_SERVER} --cluster-domain=${CLUSTER_DNS_DOMAIN} --cloud-provider=gce --cloud-config=/etc/kubernetes/cloud-config"
-      EOF
-
-      systemctl daemon-reload
-      systemctl restart kubelet.service
       PRIVATEIP=`curl_metadata "network-interfaces/0/ip"`
       echo $PRIVATEIP > /tmp/.ip
-      PUBLICIP=`curl_metadata "network-interfaces/0/access-configs/0/external-ip"`
 
       # Set up the GCE cloud config, which gets picked up by kubeadm init since cloudProvider is set to GCE.
-      copy_file cloud-config /etc/kubernetes/cloud-config 0644
+      copy_file cloud-config /etc/kubernetes/ccm/cloud-config 0644
 
       # Set up kubeadm config file to pass parameters to kubeadm init.
       cat > /etc/kubernetes/kubeadm_config.yaml <<EOF
@@ -102,12 +110,12 @@ items:
         serviceSubnet: ${SERVICE_CIDR}
       kubernetesVersion: v${CONTROL_PLANE_VERSION}
       apiServerCertSANs:
-      - ${PUBLICIP}
-      - ${PRIVATEIP}
+        - ${PUBLICIP}
+        - ${PRIVATEIP}
       bootstrapTokens:
-      - groups:
-        - system:bootstrappers:kubeadm:default-node-token
-        token: ${TOKEN}
+        - groups:
+            - system:bootstrappers:kubeadm:default-node-token
+          token: ${TOKEN}
       apiServerExtraArgs:
         cloud-provider: gce
       controllerManagerExtraArgs:
@@ -118,18 +126,40 @@ items:
       EOF
 
       function install_certificates () {
-          if ! curl_metadata "attributes/ca-cert"; then
-              return
-          fi
-          echo "Configuring custom certificate authority..."
-          PKI_PATH=/etc/kubernetes/pki
-          mkdir -p ${PKI_PATH}
-          CA_CERT_PATH=${PKI_PATH}/ca.crt
-          curl_metadata "attributes/ca-cert" | base64 -d > ${CA_CERT_PATH}
-          chmod 0644 ${CA_CERT_PATH}
-          CA_KEY_PATH=${PKI_PATH}/ca.key
-          curl_metadata "attributes/ca-key" | base64 -d > ${CA_KEY_PATH}
-          chmod 0600 ${CA_KEY_PATH}
+        echo "Configuring custom certificate authority..."
+        PKI_PATH=/etc/kubernetes/pki
+        mkdir -p ${PKI_PATH}
+        CA_CERT_PATH=${PKI_PATH}/ca.crt
+        curl_metadata "attributes/ca-cert" | base64 -d > ${CA_CERT_PATH}
+        chmod 0644 ${CA_CERT_PATH}
+        CA_KEY_PATH=${PKI_PATH}/ca.key
+        curl_metadata "attributes/ca-key" | base64 -d > ${CA_KEY_PATH}
+        chmod 0600 ${CA_KEY_PATH}
+
+        echo "Configuring frontproxy certificate authority..."
+        CA_CERT_PATH=/etc/kubernetes/pki/front-proxy-ca.crt
+        curl_metadata "attributes/fpca-cert" | base64 -d > ${CA_CERT_PATH}
+        chmod 0644 ${CA_CERT_PATH}
+        CA_KEY_PATH=/etc/kubernetes/pki/front-proxy-ca.key
+        curl_metadata "attributes/fpca-key" | base64 -d > ${CA_KEY_PATH}
+        chmod 0600 ${CA_KEY_PATH}
+
+        echo "Configuring etcd certificate authority..."
+        mkdir -p /etc/kubernetes/pki/etcd
+        CA_CERT_PATH=/etc/kubernetes/pki/etcd/ca.crt
+        curl_metadata "attributes/etcdca-cert" | base64 -d > ${CA_CERT_PATH}
+        chmod 0644 ${CA_CERT_PATH}
+        CA_KEY_PATH=/etc/kubernetes/pki/etcd/ca.key
+        curl_metadata "attributes/etcdca-key" | base64 -d > ${CA_KEY_PATH}
+        chmod 0600 ${CA_KEY_PATH}
+
+        echo "Configuring service account certificate authority..."
+        CA_CERT_PATH=/etc/kubernetes/pki/sa.pub
+        curl_metadata "attributes/sa-cert" | base64 -d > ${CA_CERT_PATH}
+        chmod 0644 ${CA_CERT_PATH}
+        CA_KEY_PATH=/etc/kubernetes/pki/sa.key
+        curl_metadata "attributes/sa-key" | base64 -d > ${CA_KEY_PATH}
+        chmod 0600 ${CA_KEY_PATH}
       }
 
       # Create and set bridge-nf-call-iptables to 1 to pass the kubeadm preflight check.
@@ -139,20 +169,73 @@ items:
 
       install_certificates
 
-      kubeadm init --config /etc/kubernetes/kubeadm_config.yaml
+      if [ "$TOKEN" == "" ]; then
+      cat >/tmp/kubeadm.yaml <<EOF
+      ---
+      apiVersion: kubeadm.k8s.io/v1beta1
+      kind: ClusterConfiguration
+      apiServer:
+        certSANs:
+          - "${LOADBALANCER_IP}"
+          - "${PRIVATEIP}"
+          - "${PUBLICIP}"
+        extraArgs:
+          cloud-provider: gce
+      controllerManager:
+        extraArgs:
+          cloud-provider: gce
+      controlPlaneEndpoint: "${LOADBALANCER_IP}:6443"
+      clusterName: "${CLUSTER_NAME}"
+      networking:
+        dnsDomain: "${CLUSTER_DNS_DOMAIN}"
+        podSubnet: "${POD_CIDR}"
+        serviceSubnet: "${SERVICE_CIDR}"
+      kubernetesVersion: "${CONTROL_PLANE_VERSION}"
+      ---
+      apiVersion: kubeadm.k8s.io/v1beta1
+      kind: InitConfiguration
+      nodeRegistration:
+        kubeletExtraArgs:
+          cloud-provider: gce
+      EOF
+
+        kubeadm init --config /tmp/kubeadm.yaml
+
+      else
+        cat > /tmp/kubeadm-controlplane-join-config.yaml <<EOF
+      ---
+      apiVersion: kubeadm.k8s.io/v1beta1
+      kind: JoinConfiguration
+      discovery:
+        bootstrapToken:
+          token: "${TOKEN}"
+          apiServerEndpoint: "${LOADBALANCER_IP}:6443"
+          caCertHashes:
+            - "${CACERTHASH}"
+      nodeRegistration:
+        kubeletExtraArgs:
+          cloud-provider: gce
+          cloud-config: /etc/kubernetes/ccm/cloud-config
+      controlPlane:
+        localAPIEndpoint:
+          advertiseAddress: "${PRIVATEIP}"
+          bindPort: 6443
+      EOF
+        kubeadm join --config /tmp/kubeadm-controlplane-join-config.yaml
+      fi
 
       for tries in $(seq 1 60); do
-          kubectl --kubeconfig /etc/kubernetes/kubelet.conf annotate --overwrite node $(hostname) machine=${MACHINE} && break
-          sleep 1
+        kubectl --kubeconfig /etc/kubernetes/kubelet.conf annotate --overwrite node $(hostname) machine=${MACHINE} && break
+      sleep 1
       done
       echo done.
       ) 2>&1 | tee /var/log/startup.log
 - machineParams:
-  - os: ubuntu-1604-lts
+  - os: ubuntu-1604-xenial-v20170721
     roles:
     - Node
     versions:
-      kubelet: 1.12.0
+      kubelet: 1.14.0
   image: projects/ubuntu-os-cloud/global/images/family/ubuntu-1604-lts
   metadata:
     startupScript: |
@@ -182,12 +265,7 @@ items:
       apt-get update
 
       function install_configure_docker () {
-          # prevent docker from auto-starting
-          echo "exit 101" > /usr/sbin/policy-rc.d
-          chmod +x /usr/sbin/policy-rc.d
-          trap "rm /usr/sbin/policy-rc.d" RETURN
-          apt-get install -y docker-engine=1.12.0-0~xenial
-          echo 'DOCKER_OPTS="--iptables=false --ip-masq=false"' > /etc/default/docker
+          apt-get install -y docker.io
           systemctl daemon-reload
           systemctl enable docker
           systemctl start docker

@@ -18,10 +18,15 @@ package google
 
 import (
 	"bytes"
+	"crypto/x509"
+	"encoding/pem"
 	"text/template"
 
 	"fmt"
 
+	"github.com/pkg/errors"
+
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/pubkeypin"
 	"sigs.k8s.io/cluster-api-provider-gcp/pkg/cloud/google/machinesetup"
 	clusterv1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
 )
@@ -38,6 +43,9 @@ type metadataParams struct {
 	PodCIDR        string
 	ServiceCIDR    string
 	MasterEndpoint string
+
+	LoadbalancerIP string
+	CACertHash     string
 }
 
 func nodeMetadata(token string, cluster *clusterv1.Cluster, machine *clusterv1.Machine, project string, metadata *machinesetup.Metadata) (map[string]string, error) {
@@ -65,14 +73,26 @@ func nodeMetadata(token string, cluster *clusterv1.Cluster, machine *clusterv1.M
 	return nodeMetadata, nil
 }
 
-func masterMetadata(cluster *clusterv1.Cluster, machine *clusterv1.Machine, project string, metadata *machinesetup.Metadata) (map[string]string, error) {
+func masterMetadata(kubeadmToken string, cluster *clusterv1.Cluster, machine *clusterv1.Machine, project string, metadata *machinesetup.Metadata) (map[string]string, error) {
+	clusterConfig, err := clusterProviderFromProviderSpec(cluster.Spec.ProviderSpec)
+	if err != nil {
+		return nil, errors.Wrap(err, "Error decoding cluster config from provider spec")
+	}
+
+	block, _ := pem.Decode(clusterConfig.CAKeyPair.Cert)
+
+	caCert, err := x509.ParseCertificate(block.Bytes)
+
 	params := metadataParams{
-		Cluster:     cluster,
-		Machine:     machine,
-		Project:     project,
-		Metadata:    metadata,
-		PodCIDR:     getSubnet(cluster.Spec.ClusterNetwork.Pods),
-		ServiceCIDR: getSubnet(cluster.Spec.ClusterNetwork.Services),
+		Cluster:        cluster,
+		Machine:        machine,
+		Project:        project,
+		Metadata:       metadata,
+		PodCIDR:        getSubnet(cluster.Spec.ClusterNetwork.Pods),
+		ServiceCIDR:    getSubnet(cluster.Spec.ClusterNetwork.Services),
+		LoadbalancerIP: cluster.Status.APIEndpoints[0].Host,
+		CACertHash:     pubkeypin.Hash(caCert),
+		Token:          kubeadmToken,
 	}
 
 	masterMetadata := map[string]string{}
@@ -113,6 +133,10 @@ CONTROL_PLANE_VERSION={{ .Machine.Spec.Versions.ControlPlane }}
 CLUSTER_DNS_DOMAIN={{ .Cluster.Spec.ClusterNetwork.ServiceDomain }}
 POD_CIDR={{ .PodCIDR }}
 SERVICE_CIDR={{ .ServiceCIDR }}
+CLUSTER_NAME={{ .Cluster.Name }}
+LOADBALANCER_IP={{ .LoadbalancerIP }}
+CACERTHASH={{ .CACertHash }}
+TOKEN={{ .Token }}
 `
 
 const nodeEnvironmentVars = `

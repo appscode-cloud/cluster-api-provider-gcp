@@ -46,6 +46,9 @@ type metadataParams struct {
 
 	LoadbalancerIP string
 	CACertHash     string
+
+	KubeletVersion      string
+	ControlPlaneVersion string
 }
 
 func nodeMetadata(token string, cluster *clusterv1.Cluster, machine *clusterv1.Machine, project string, metadata *machinesetup.Metadata) (map[string]string, error) {
@@ -61,6 +64,7 @@ func nodeMetadata(token string, cluster *clusterv1.Cluster, machine *clusterv1.M
 		PodCIDR:        getSubnet(cluster.Spec.ClusterNetwork.Pods),
 		ServiceCIDR:    getSubnet(cluster.Spec.ClusterNetwork.Services),
 		MasterEndpoint: getEndpoint(cluster.Status.APIEndpoints[0]),
+		KubeletVersion: stripVersion(machine.Spec.Versions.Kubelet),
 	}
 
 	nodeMetadata := map[string]string{}
@@ -84,15 +88,17 @@ func masterMetadata(kubeadmToken string, cluster *clusterv1.Cluster, machine *cl
 	caCert, err := x509.ParseCertificate(block.Bytes)
 
 	params := metadataParams{
-		Cluster:        cluster,
-		Machine:        machine,
-		Project:        project,
-		Metadata:       metadata,
-		PodCIDR:        getSubnet(cluster.Spec.ClusterNetwork.Pods),
-		ServiceCIDR:    getSubnet(cluster.Spec.ClusterNetwork.Services),
-		LoadbalancerIP: cluster.Status.APIEndpoints[0].Host,
-		CACertHash:     pubkeypin.Hash(caCert),
-		Token:          kubeadmToken,
+		Cluster:             cluster,
+		Machine:             machine,
+		Project:             project,
+		Metadata:            metadata,
+		PodCIDR:             getSubnet(cluster.Spec.ClusterNetwork.Pods),
+		ServiceCIDR:         getSubnet(cluster.Spec.ClusterNetwork.Services),
+		LoadbalancerIP:      cluster.Status.APIEndpoints[0].Host,
+		CACertHash:          pubkeypin.Hash(caCert),
+		Token:               kubeadmToken,
+		KubeletVersion:      stripVersion(machine.Spec.Versions.Kubelet),
+		ControlPlaneVersion: stripVersion(machine.Spec.Versions.ControlPlane),
 	}
 
 	masterMetadata := map[string]string{}
@@ -122,14 +128,14 @@ func init() {
 // TODO(kcoronado): replace with actual network and node tag args when they are added into provider spec.
 const masterEnvironmentVars = `
 #!/bin/bash
-KUBELET_VERSION={{ .Machine.Spec.Versions.Kubelet }}
+KUBELET_VERSION={{ .KubeletVersion }}
 VERSION=v${KUBELET_VERSION}
 PORT=443
 NAMESPACE={{ .Machine.ObjectMeta.Namespace }}
 MACHINE=$NAMESPACE
 MACHINE+="/"
 MACHINE+={{ .Machine.ObjectMeta.Name }}
-CONTROL_PLANE_VERSION={{ .Machine.Spec.Versions.ControlPlane }}
+CONTROL_PLANE_VERSION={{ .ControlPlaneVersion }}
 CLUSTER_DNS_DOMAIN={{ .Cluster.Spec.ClusterNetwork.ServiceDomain }}
 POD_CIDR={{ .PodCIDR }}
 SERVICE_CIDR={{ .ServiceCIDR }}
@@ -141,7 +147,7 @@ TOKEN={{ .Token }}
 
 const nodeEnvironmentVars = `
 #!/bin/bash
-KUBELET_VERSION={{ .Machine.Spec.Versions.Kubelet }}
+KUBELET_VERSION={{ .KubeletVersion }}
 TOKEN={{ .Token }}
 MASTER={{ .MasterEndpoint }}
 NAMESPACE={{ .Machine.ObjectMeta.Namespace }}
